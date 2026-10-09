@@ -1,8 +1,9 @@
 ﻿import os
 import shutil
+import json
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from openai import OpenAI
+import google.generativeai as genai
 
 app = FastAPI()
 
@@ -15,7 +16,10 @@ app.add_middleware(
     expose_headers=["X-Original-Text", "X-Translated-Text"],
 )
 
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Konfigurer Gemini API
+api_key = os.environ.get("GEMINI_API_KEY")
+if api_key:
+    genai.configure(api_key=api_key)
 
 @app.post("/translate-audio")
 async def translate_audio(
@@ -23,46 +27,53 @@ async def translate_audio(
     source_lang: str = Form("no"),
     target_lang: str = Form("th"),
 ):
-    temp_filename = f"temp_{file.filename}"
+    # Behold filendelse slik at Gemini forstår lydformatet (f.eks. .m4a / .wav)
+    file_ext = os.path.splitext(file.filename)[1] or ".m4a"
+    temp_filename = f"temp_upload{file_ext}"
+
     try:
         with open(temp_filename, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # 1. Transkribering
-        with open(temp_filename, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                language=source_lang,
-            )
-        original_text = transcript.text.strip()
-        print(f"\n[HØRT TALE ({source_lang})]: {original_text}")
+        # Last opp lydfilen direkte til Gemini File API
+        audio_file = genai.upload_file(path=temp_filename)
 
-        # 2. Oversettelse
         if target_lang == "th":
-            system_prompt = (
-                "Du er en tolk mellom norsk og thai. Oversett den norske setningen til naturlig, "
-                "muntlig hverdagsthai slik folk faktisk snakker sammen. "
-                "Bruk mannlig høflighetspartikkel (ครับ / khrap). Ikke oversett ordrett eller stivt. "
-                "Svar KUN med oversettelsen i thai skrift."
+            prompt = (
+                "Hør nøye på lydfilen på norsk. "
+                "1. Transkriber den norske teksten nøyaktig. "
+                "2. Oversett setningen til naturlig, muntlig hverdagsthai slik folk snakker. "
+                "Bruk mannlig høflighetspartikkel (ครับ / khrap). "
+                "Returner svaret KUN som et gyldig JSON-objekt i dette formatet: "
+                '{"original_text": "norsk tekst her", "translated_text": "thai tekst her"}'
             )
         else:
-            system_prompt = (
-                "Du er en tolk fra thai til norsk. Brukeren snakker muntlig thai / Isan-påvirket dagligtale. "
-                "Gjør ditt beste for å forstå meningen selv om transkripsjonen har feil pga dialekt eller tonefall. "
-                "Oversett meningen til god, naturlig norsk. Svar KUN med den norske oversettelsen."
+            prompt = (
+                "Hør nøye på lydfilen på thai / Isan / lokal dialekt fra Sakon Nakhon (phasa Yo). "
+                "1. Transkriber hva som blir sagt. "
+                "2. Forstå meningen og hensikten bak dialekten, og oversett til naturlig, flytende og uformell norsk tale. "
+                "Returner svaret KUN som et gyldig JSON-objekt i dette formatet: "
+                '{"original_text": "thai tekst her", "translated_text": "norsk tekst her"}'
             )
 
-        # 3. Oversettelse med gpt-4o-mini
-        completion = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": original_text},
-            ],
-            temperature=0.2,
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            generation_config={"response_mime_type": "application/json"}
         )
-        translated_text = completion.choices[0].message.content.strip()
+
+        response = model.generate_content([audio_file, prompt])
+
+        # Slett filen fra Gemini etter behandling
+        try:
+            genai.delete_file(audio_file.name)
+        except Exception:
+            pass
+
+        data = json.loads(response.text)
+        original_text = data.get("original_text", "").strip()
+        translated_text = data.get("translated_text", "").strip()
+
+        print(f"\n[HØRT ({source_lang})]: {original_text}")
         print(f"[OVERSETTELSE ({target_lang})]: {translated_text}")
 
         return {
