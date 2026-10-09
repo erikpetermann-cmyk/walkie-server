@@ -1,6 +1,5 @@
 import os
 import json
-import base64
 import time
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,47 +33,46 @@ async def translate_audio(
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY mangler")
 
     try:
-        # Les lyden rett inn i minnet som bytes
         audio_bytes = await file.read()
         mime_type = file.content_type or "audio/m4a"
 
+        # Korte, direkte instruksjoner for raskest mulig prosessering
         if target_lang == "th":
             prompt = (
-                "Hør nøye på lydfilen på norsk. "
-                "1. Transkriber den norske teksten nøyaktig. "
-                "2. Oversett setningen til naturlig, muntlig hverdagsthai slik folk snakker. "
-                "Bruk mannlig høflighetspartikkel (ครับ / khrap). "
-                "Returner svaret KUN som et gyldig JSON-objekt i dette formatet: "
-                '{"original_text": "norsk tekst her", "translated_text": "thai tekst her"}'
+                "Transkriber norsk tale og oversett direkte til naturlig muntlig thai (høflig form med ครับ/khrap). "
+                'Svar kun gyldig JSON: {"original_text": "...", "translated_text": "..."}'
             )
         else:
             prompt = (
-                "Hør nøye på lydfilen på thai / Isan / lokal dialekt fra Sakon Nakhon (phasa Yo). "
-                "1. Transkriber hva som blir sagt. "
-                "2. Forstå meningen og hensikten bak dialekten, og oversett til naturlig, flytende og uformell norsk tale. "
-                "Returner svaret KUN som et gyldig JSON-objekt i dette formatet: "
-                '{"original_text": "thai tekst her", "translated_text": "norsk tekst her"}'
+                "Transkriber thai/Isan tale og oversett direkte til naturlig muntlig norsk. "
+                'Svar kun gyldig JSON: {"original_text": "...", "translated_text": "..."}'
             )
 
-        # Send lyden direkte i minnet (uten filopplasting)
         audio_part = types.Part.from_bytes(
             data=audio_bytes,
             mime_type=mime_type,
         )
 
+        # Token-begrensning og lav temperatur for maksimal responshastighet
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            max_output_tokens=300,
+            temperature=0.2,
+        )
+
         response = None
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 response = client.models.generate_content(
                     model="gemini-3.8-flash",
                     contents=[audio_part, prompt],
-                    config={"response_mime_type": "application/json"}
+                    config=config,
                 )
                 break
             except Exception as e:
                 err_msg = str(e)
-                if ("503" in err_msg or "UNAVAILABLE" in err_msg) and attempt < 2:
-                    time.sleep(1.0)
+                if ("503" in err_msg or "UNAVAILABLE" in err_msg) and attempt < 1:
+                    time.sleep(0.3)
                     continue
                 raise e
 
@@ -82,15 +80,14 @@ async def translate_audio(
         original_text = data.get("original_text", "").strip()
         translated_text = data.get("translated_text", "").strip()
 
-        print(f"\n[HØRT ({source_lang})]: {original_text}")
-        print(f"[OVERSETTELSE ({target_lang})]: {translated_text}")
+        print(f"[{source_lang}->{target_lang}]: {original_text} -> {translated_text}")
 
         return {
             "original_text": original_text,
             "translated_text": translated_text,
             "sender": sender,
             "recipient": recipient,
-            "channel": channel
+            "channel": channel,
         }
 
     except Exception as e:
