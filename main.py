@@ -1,10 +1,11 @@
 import os
-import shutil
 import json
+import base64
 import time
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
+from google.genai import types
 
 app = FastAPI()
 
@@ -32,14 +33,10 @@ async def translate_audio(
     if not client:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY mangler")
 
-    file_ext = os.path.splitext(file.filename)[1] or ".m4a"
-    temp_filename = f"temp_upload{file_ext}"
-
     try:
-        with open(temp_filename, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        audio_file = client.files.upload(file=temp_filename)
+        # Les lyden rett inn i minnet som bytes
+        audio_bytes = await file.read()
+        mime_type = file.content_type or "audio/m4a"
 
         if target_lang == "th":
             prompt = (
@@ -59,26 +56,27 @@ async def translate_audio(
                 '{"original_text": "thai tekst her", "translated_text": "norsk tekst her"}'
             )
 
+        # Send lyden direkte i minnet (uten filopplasting)
+        audio_part = types.Part.from_bytes(
+            data=audio_bytes,
+            mime_type=mime_type,
+        )
+
         response = None
         for attempt in range(3):
             try:
                 response = client.models.generate_content(
-                    model="gemini-3.8-flash",
-                    contents=[audio_file, prompt],
+                    model="gemini-1.5-flash",
+                    contents=[audio_part, prompt],
                     config={"response_mime_type": "application/json"}
                 )
                 break
             except Exception as e:
                 err_msg = str(e)
                 if ("503" in err_msg or "UNAVAILABLE" in err_msg) and attempt < 2:
-                    time.sleep(2.0)
+                    time.sleep(1.0)
                     continue
                 raise e
-
-        try:
-            client.files.delete(name=audio_file.name)
-        except Exception:
-            pass
 
         data = json.loads(response.text)
         original_text = data.get("original_text", "").strip()
@@ -98,9 +96,6 @@ async def translate_audio(
     except Exception as e:
         print(f"Feil: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
 
 if __name__ == "__main__":
     import uvicorn
