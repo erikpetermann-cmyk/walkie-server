@@ -5,6 +5,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from google.genai import types
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -20,6 +21,10 @@ app.add_middleware(
 api_key = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=api_key) if api_key else None
 
+class TranslationResult(BaseModel):
+    original_text: str
+    translated_text: str
+
 @app.post("/translate-audio")
 async def translate_audio(
     file: UploadFile = File(...),
@@ -34,18 +39,29 @@ async def translate_audio(
 
     try:
         audio_bytes = await file.read()
-        mime_type = file.content_type or "audio/m4a"
+        mime_type = file.content_type
 
-        # Korte, direkte instruksjoner for raskest mulig prosessering
+        # Sørg for gyldig MIME-type dersom telefonen sender tom type
+        if not mime_type or mime_type == "application/octet-stream":
+            filename = (file.filename or "").lower()
+            if filename.endswith(".m4a") or filename.endswith(".mp4"):
+                mime_type = "audio/mp4"
+            elif filename.endswith(".wav"):
+                mime_type = "audio/wav"
+            elif filename.endswith(".3gp") or filename.endswith(".3gpp"):
+                mime_type = "audio/3gpp"
+            elif filename.endswith(".aac"):
+                mime_type = "audio/aac"
+            else:
+                mime_type = "audio/mp4"
+
         if target_lang == "th":
             prompt = (
-                "Transkriber norsk tale og oversett direkte til naturlig muntlig thai (høflig form med ครับ/khrap). "
-                'Svar kun gyldig JSON: {"original_text": "...", "translated_text": "..."}'
+                "Transkriber norsk tale og oversett direkte til naturlig muntlig thai (bruk høflig partikkel ครับ/khrap)."
             )
         else:
             prompt = (
-                "Transkriber thai/Isan tale og oversett direkte til naturlig muntlig norsk. "
-                'Svar kun gyldig JSON: {"original_text": "...", "translated_text": "..."}'
+                "Transkriber thai/Isan tale og oversett direkte til naturlig muntlig norsk."
             )
 
         audio_part = types.Part.from_bytes(
@@ -53,10 +69,11 @@ async def translate_audio(
             mime_type=mime_type,
         )
 
-        # Token-begrensning og lav temperatur for maksimal responshastighet
+        # Bruker response_schema og 1000 tokens for å garantere fullført JSON
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            max_output_tokens=300,
+            response_schema=TranslationResult,
+            max_output_tokens=1000,
             temperature=0.2,
         )
 
