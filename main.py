@@ -59,19 +59,19 @@ async def translate_audio(
                 '{"original_text": "thai tekst her", "translated_text": "norsk tekst her"}'
             )
 
-        # Forsøk opptil 3 ganger dersom Google melder om kapasitetskø (503)
         response = None
         for attempt in range(3):
             try:
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-2.0-flash",
                     contents=[audio_file, prompt],
                     config={"response_mime_type": "application/json"}
                 )
                 break
             except Exception as e:
-                if "503" in str(e) and attempt < 2:
-                    time.sleep(1.2)
+                err_msg = str(e)
+                if ("503" in err_msg or "UNAVAILABLE" in err_msg) and attempt < 2:
+                    time.sleep(2.0)
                     continue
                 raise e
 
